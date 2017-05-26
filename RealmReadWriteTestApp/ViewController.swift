@@ -292,7 +292,7 @@ class ViewController: UIViewController {
             self.fetchThreadRunLoop  = nil
             
             // !!! without this notifications will stop firing after several thread start/stop cycles
-            self.fetchResultsThread = nil
+            //self.fetchResultsThread = nil
             
             self.fetchThreadExitSignal.lock()
             self.fetchThreadExitSignal.signal()

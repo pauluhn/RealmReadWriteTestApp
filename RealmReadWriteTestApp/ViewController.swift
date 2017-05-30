@@ -76,6 +76,7 @@ class ViewController: UIViewController {
     var fetchThreadExitSignal: NSCondition = NSCondition()
     var fetchResultsThread: Results<DemoObject>?
     var fetchThreadShouldStop = false
+    var fetchThreadRealm: Realm?
     var notificationsReceivedOnThread = 0
     let kNumberOfBackgroundQueues = 16
     let kNumberOfObjects = 10000
@@ -264,18 +265,24 @@ class ViewController: UIViewController {
         autoreleasepool {
             self.notificationsReceivedOnThread = 0
             self.fetchThreadRunLoop = CFRunLoopGetCurrent()
+            self.fetchThreadRealm = realmOfType(.threadListener)
             
             CFRunLoopPerformBlock(self.fetchThreadRunLoop, CFRunLoopMode.defaultMode.rawValue) {
                 // fetch all objects
-                self.fetchResultsThread = realmOfType(.threadListener).results
-                
-                // observer notifications
-                self.notificationTokenThread = self.fetchResultsThread?.addNotificationBlock { [weak self] _ in
-                    let count = self?.fetchResultsThread?.count ?? 0
-                    self?.notificationsReceivedOnThread += 1
-                    DispatchQueue.main.async {
-                        self?.threadListenerCount = count
-                        self?.threadListenerSize = RealmType.threadListener.fileSize
+                autoreleasepool {
+                    self.fetchThreadRealm?.refresh()
+                    self.fetchResultsThread = self.fetchThreadRealm?.results
+                    
+                    // observer notifications
+                    self.notificationTokenThread?.stop()
+                    self.notificationTokenThread = nil
+                    self.notificationTokenThread = self.fetchResultsThread?.addNotificationBlock { [weak self] _ in
+                        let count = self?.fetchResultsThread?.count ?? 0
+                        self?.notificationsReceivedOnThread += 1
+                        DispatchQueue.main.async {
+                            self?.threadListenerCount = count
+                            self?.threadListenerSize = RealmType.threadListener.fileSize
+                        }
                     }
                 }
             }

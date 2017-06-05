@@ -52,11 +52,39 @@ enum RealmType: String {
         return baseURL.appendingPathComponent(self.rawValue).appendingPathExtension("realm")
     }
     var fileSize: UInt64 {
-        return try! FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as! UInt64
+        do {
+            return try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as! UInt64
+        } catch {
+            print("ERROR: \(error.localizedDescription)")
+        }
+        return 0
     }
 }
 func realmOfType(_ type: RealmType) -> Realm {
-    return try! Realm(configuration: Realm.Configuration(fileURL: type.fileURL))
+    return try! Realm(configuration: Realm.Configuration(
+        fileURL: type.fileURL,
+        shouldCompactOnLaunch: { totalBytes, usedBytes in
+            // totalBytes refers to the size of the file on disk in bytes (data + free space)
+            // usedBytes refers to the number of bytes used by data in the file
+            
+            // Compact if the file is over 10MB in size and less than 90% 'used'
+            let tenMB = 10 * 1024 * 1024
+            return (totalBytes > tenMB) && (Double(usedBytes) / Double(totalBytes)) < 0.9
+        }))
+}
+func asyncRealm(type: RealmType, completion: @escaping (Realm?, Error?) -> Void) {
+    Realm.asyncOpen(configuration: Realm.Configuration(
+                        fileURL: type.fileURL,
+                        shouldCompactOnLaunch: { totalBytes, usedBytes in
+                            // totalBytes refers to the size of the file on disk in bytes (data + free space)
+                            // usedBytes refers to the number of bytes used by data in the file
+                            
+                            // Compact if the file is over 10MB in size and less than 90% 'used'
+                            let tenMB = 10 * 1024 * 1024
+                            return (totalBytes > tenMB) && (Double(usedBytes) / Double(totalBytes)) < 0.9
+                        }),
+                    callbackQueue: DispatchQueue.global(),
+                    callback: completion)
 }
 extension Realm {
     var results: Results<DemoObject> {
@@ -78,7 +106,7 @@ class ViewController: UIViewController {
     var fetchThreadShouldStop = false
     var fetchThreadRealm: Realm?
     var notificationsReceivedOnThread = 0
-    let kNumberOfBackgroundQueues = 16
+    let kNumberOfBackgroundQueues = 100
     let kNumberOfObjects = 10000
     
     var readCount = 0
@@ -122,8 +150,8 @@ class ViewController: UIViewController {
         
         // delete realm files
         print(baseURL)
-        try! FileManager.default.removeItem(at: baseURL)
-        try! FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: false, attributes: nil)
+//        try! FileManager.default.removeItem(at: baseURL)
+//        try! FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: false, attributes: nil)
         
         let results = realmOfType(.listener).results
         tokens.append(results.addNotificationBlock { _ in
@@ -197,14 +225,16 @@ class ViewController: UIViewController {
     
     func doAdd(queueIndex: Int, realmType: RealmType) {
         let createId = queueIndex
-        let realm = realmOfType(realmType)
-        try! realm.write {
-            if realmType == .read {
-                self.doFetch()
+        asyncRealm(type: realmType) { (realm, error) in
+            guard let realm = realm else { print("NO REALM"); return }
+            try! realm.write {
+                if realmType == .read {
+                    self.doFetch()
+                }
+                let uuid = UUID().uuidString
+                let newObject = DemoObject(id: "\(createId)-\(uuid)", title: uuid, date: Date(), groupId: "\(createId)")
+                realm.add(newObject, update: true)
             }
-            let uuid = UUID().uuidString
-            let newObject = DemoObject(id: "\(createId)-\(uuid)", title: uuid, date: Date(), groupId: "\(createId)")
-            realm.add(newObject, update: true)
         }
     }
     
@@ -214,17 +244,19 @@ class ViewController: UIViewController {
         if updateId < 0 {
             updateId += self.kNumberOfBackgroundQueues
         }
-        let realm = realmOfType(realmType)
-        let objectsToUpdate = realm.results.filter(NSPredicate(format: "groupId = %@", "\(updateId)"))
-        let count = objectsToUpdate.count
-        guard count > 0 else { return }
-        let index = arc4random_uniform(UInt32(count))
-        let objectToUpdate = objectsToUpdate[Int(index)]
-        try! realm.write {
-            if realmType == .read {
-                self.doFetch()
+        asyncRealm(type: realmType) { (realm, error) in
+            guard let realm = realm else { print("NO REALM"); return }
+            let objectsToUpdate = realm.results.filter(NSPredicate(format: "groupId = %@", "\(updateId)"))
+            let count = objectsToUpdate.count
+            guard count > 0 else { return }
+            let index = arc4random_uniform(UInt32(count))
+            let objectToUpdate = objectsToUpdate[Int(index)]
+            try! realm.write {
+                if realmType == .read {
+                    self.doFetch()
+                }
+                objectToUpdate.date = Date()
             }
-            objectToUpdate.date = Date()
         }
     }
     
@@ -235,20 +267,22 @@ class ViewController: UIViewController {
             childId += self.kNumberOfBackgroundQueues
         }
         
-        let realm = realmOfType(realmType)
-        let objectsToAddChild = realm.results.filter(NSPredicate(format: "groupId = %@", "\(childId)"))
-        let count = objectsToAddChild.count
-        guard count > 0 else { return }
-        let index = arc4random_uniform(UInt32(count))
-        let objectToAddChild = objectsToAddChild[Int(index)]
-        try! realm.write {
-            if realmType == .read {
-                self.doFetch()
+        asyncRealm(type: realmType) { (realm, error) in
+            guard let realm = realm else { print("NO REALM"); return }
+            let objectsToAddChild = realm.results.filter(NSPredicate(format: "groupId = %@", "\(childId)"))
+            let count = objectsToAddChild.count
+            guard count > 0 else { return }
+            let index = arc4random_uniform(UInt32(count))
+            let objectToAddChild = objectsToAddChild[Int(index)]
+            try! realm.write {
+                if realmType == .read {
+                    self.doFetch()
+                }
+                let uuid = UUID().uuidString
+                let newObjectChild = DemoObjectChild(id: "\(childId)-\(uuid)", title: uuid, date: Date())
+                realm.add(newObjectChild, update: true)
+                objectToAddChild.childs.append(newObjectChild)
             }
-            let uuid = UUID().uuidString
-            let newObjectChild = DemoObjectChild(id: "\(childId)-\(uuid)", title: uuid, date: Date())
-            realm.add(newObjectChild, update: true)
-            objectToAddChild.childs.append(newObjectChild)
         }
     }
     
@@ -299,7 +333,7 @@ class ViewController: UIViewController {
             self.fetchThreadRunLoop  = nil
             
             // !!! without this notifications will stop firing after several thread start/stop cycles
-            //self.fetchResultsThread = nil
+            self.fetchResultsThread = nil
             
             self.fetchThreadExitSignal.lock()
             self.fetchThreadExitSignal.signal()
